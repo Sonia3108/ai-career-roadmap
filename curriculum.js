@@ -237,7 +237,7 @@ print(df.dtypes.to_string())
 # ── Filtering ──────────────────────────────────────────────
 eng_senior = df[(df['Department'] == 'Engineering') & (df['YearsExp'] >= 8)]
 print(f"\nSenior Engineers: {len(eng_senior)} people")
-print(f"  Avg salary: ${eng_senior['Salary'].mean():,.0f}")
+print(f"  Avg salary: \${eng_senior['Salary'].mean():,.0f}")
 
 # ── GroupBy Analysis ──────────────────────────────────────
 print("\nDepartment Summary:")
@@ -598,19 +598,19 @@ r2_test  = r2_score(y_test, y_pred)
 print(f"\nModel Performance:")
 print(f"  Train R²: {r2_train:.4f}")
 print(f"  Test  R²: {r2_test:.4f}  ← how well it generalizes")
-print(f"  RMSE:     ${rmse:,.0f}  (avg prediction error)")
+print(f"  RMSE:     \${rmse:,.0f}  (avg prediction error)")
 
 # ── Interpret coefficients ────────────────────────────────
 features = ['Size (sqft)', 'Bedrooms', 'Age (years)']
 print(f"\nLearned Weights:")
 for name, coef in zip(features, model.coef_):
-    print(f"  {name:15s}: ${coef:+,.0f} per unit")
-print(f"  {'Intercept':15s}: ${model.intercept_:,.0f}")
+    print(f"  {name:15s}: \${coef:+,.0f} per unit")
+print(f"  {'Intercept':15s}: \${model.intercept_:,.0f}")
 
 # ── Predict a new house ───────────────────────────────────
 house = np.array([[2200, 3, 8]])   # 2200 sqft, 3 beds, 8 yrs old
 pred  = model.predict(house)[0]
-print(f"\nNew house (2200sqft, 3bed, 8yrs): ${pred:,.0f}")`,
+print(f"\nNew house (2200sqft, 3bed, 8yrs): \${pred:,.0f}")`,
           exercise: {
             title: "Challenge: Salary Predictor",
             description: "Build a linear regression model to predict salaries from years of experience.",
@@ -669,10 +669,10 @@ model.fit(X_train, y_train)
 y_pred = model.predict(X_test)
 
 print(f"R² score: {r2_score(y_test, y_pred):.4f}")
-print(f"RMSE:     ${np.sqrt(mean_squared_error(y_test, y_pred)):,.0f}")
+print(f"RMSE:     \${np.sqrt(mean_squared_error(y_test, y_pred)):,.0f}")
 
 pred_7 = model.predict([[7]])[0]
-print(f"7 years exp → salary: ${pred_7:,.0f}")`
+print(f"7 years exp → salary: \${pred_7:,.0f}")`
           }
         },
 
@@ -1056,7 +1056,7 @@ for seg in range(4):
     ages    = data[mask, 0]
     incomes = data[mask, 1]
     print(f"  Segment {seg}: {mask.sum():3d} customers | "
-          f"Age {ages.mean():.0f}y | Income ${incomes.mean():,.0f}")
+          f"Age {ages.mean():.0f}y | Income \${incomes.mean():,.0f}")
 
 # ── Visualization ─────────────────────────────────────────
 fig, axes = plt.subplots(1, 2, figsize=(11, 4))
@@ -1119,7 +1119,7 @@ labels = None
 for k in range(3):
     mask = labels == k
     print(f"Cluster {k}: {mask.sum()} products | "
-          f"avg price ${data[mask,0].mean():.0f} | "
+          f"avg price \${data[mask,0].mean():.0f} | "
           f"avg rating {data[mask,1].mean():.2f}")`,
             solution: `import numpy as np
 from sklearn.cluster import KMeans
@@ -1139,7 +1139,7 @@ labels = km.fit_predict(X)
 for k in range(3):
     mask = labels == k
     print(f"Cluster {k}: {mask.sum()} products | "
-          f"avg price ${data[mask,0].mean():.0f} | "
+          f"avg price \${data[mask,0].mean():.0f} | "
           f"avg rating {data[mask,1].mean():.2f}")`
           }
         }
