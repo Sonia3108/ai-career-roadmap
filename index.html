@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Engineer Roadmap — Interactive Learning Platform</title>
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/dracula.min.css" />
+</head>
+<body>
+
+  <!-- Loading Screen -->
+  <div id="loading-screen">
+    <div class="loading-card">
+      <div class="loading-brain">
+        <svg viewBox="0 0 80 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="40" cy="40" r="38" stroke="url(#grad)" stroke-width="2" fill="none" stroke-dasharray="4 2"/>
+          <text x="40" y="50" text-anchor="middle" font-size="32" fill="white">&#129504;</text>
+          <defs>
+            <linearGradient id="grad" x1="0" y1="0" x2="80" y2="80" gradientUnits="userSpaceOnUse">
+              <stop stop-color="#818cf8"/>
+              <stop offset="1" stop-color="#a78bfa"/>
+            </linearGradient>
+          </defs>
+        </svg>
+      </div>
+      <h1>AI Engineer Roadmap</h1>
+      <p class="loading-sub">Interactive learning platform — theory + hands-on Python</p>
+      <div class="loading-progress-wrap">
+        <div class="loading-bar-track">
+          <div class="loading-bar-fill" id="loading-bar"></div>
+        </div>
+        <span id="loading-status">Starting up...</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- App Shell -->
+  <div id="app" class="app hidden">
+
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-brand" onclick="navigate('dashboard')">
+        <span class="brand-emoji">&#129504;</span>
+        <span class="brand-name">AI Roadmap</span>
+      </div>
+
+      <div class="sidebar-progress-block">
+        <div class="sp-row">
+          <span class="sp-label">Overall Progress</span>
+          <span class="sp-pct" id="sp-pct">0%</span>
+        </div>
+        <div class="sp-track"><div class="sp-fill" id="sp-fill"></div></div>
+      </div>
+
+      <nav id="sidebar-nav"></nav>
+
+      <div class="sidebar-footer">
+        <div class="py-status" id="py-status">
+          <span class="py-dot loading" id="py-dot"></span>
+          <span id="py-status-text">Loading Python…</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Area -->
+    <div class="main-wrap">
+      <header class="topbar" id="topbar"></header>
+      <main class="content-area" id="content-area"></main>
+    </div>
+
+  </div>
+
+  <!-- Scripts -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/python/python.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/pyodide/v0.25.0/full/pyodide.js"></script>
+  <script src="curriculum.js"></script>
+  <script src="app.js"></script>
+
+</body>
+</html>
