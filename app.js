@@ -479,6 +479,7 @@ function renderLesson(container) {
       ${lesson.theory ? `<button class="tab-btn active" data-tab="theory" onclick="switchTab(event, 'theory')">📖 Theory</button>` : ''}
       ${lesson.code   ? `<button class="tab-btn" data-tab="code"   onclick="switchTab(event, 'code')">▶ Code Lab</button>` : ''}
       ${lesson.exercise ? `<button class="tab-btn" data-tab="exercise" onclick="switchTab(event, 'exercise')">✏️ Exercise</button>` : ''}
+      ${typeof PROFESSOR_NOTES !== 'undefined' && PROFESSOR_NOTES[lesson.id] ? `<button class="tab-btn" data-tab="professor" onclick="switchTab(event, 'professor')">🎓 Deep Dive</button>` : ''}
     </div>
 
     <div id="tab-theory"   class="tab-panel ${lesson.theory ? 'active' : ''}">
@@ -489,6 +490,11 @@ function renderLesson(container) {
     </div>
     <div id="tab-exercise" class="tab-panel">
       ${lesson.exercise ? renderExercise(lesson, stage) : ''}
+    </div>
+    <div id="tab-professor" class="tab-panel">
+      ${typeof PROFESSOR_NOTES !== 'undefined' && PROFESSOR_NOTES[lesson.id]
+        ? `<div class="professor-body">${PROFESSOR_NOTES[lesson.id]}</div>`
+        : ''}
     </div>
 
     <div class="lesson-nav-row">
@@ -525,9 +531,22 @@ function renderTheory(lesson, stage) {
 
 function renderProjectCard(lesson, stage) {
   const diffClass = { easy: 'easy', medium: 'medium', hard: 'hard' }[lesson.difficulty] || 'medium';
+  const s = lesson.setup;
+  const setupHtml = s ? `
+        <div class="project-setup">
+          <div class="project-steps-title">⚡ Quick Start</div>
+          <div class="setup-env-badge">${s.where}</div>
+          <div class="setup-grid">
+            ${s.install ? `<div class="setup-row"><span class="setup-label">Install</span><code class="setup-cmd">${escapeHtml(s.install)}</code></div>` : ''}
+            ${s.env     ? `<div class="setup-row"><span class="setup-label">API Key</span><code class="setup-cmd">${escapeHtml(s.env)}</code></div>` : ''}
+            ${s.run     ? `<div class="setup-row"><span class="setup-label">Run</span><code class="setup-cmd">${escapeHtml(s.run)}</code></div>` : ''}
+            ${s.test    ? `<div class="setup-row"><span class="setup-label">Test</span><span class="setup-note">${s.test}</span></div>` : ''}
+          </div>
+          ${s.colab ? `<a class="colab-btn setup-colab" href="${s.colab}" target="_blank">Open in Colab ↗</a>` : ''}
+        </div>` : '';
   return `
     <div class="theory-body">
-      <div class="project-card" style="--stage-color:var(--c${stage.id}); max-width:640px;">
+      <div class="project-card" style="--stage-color:var(--c${stage.id}); max-width:680px;">
         <div class="project-card-top">
           <div class="project-num">${lesson.icon} ${lesson.id}</div>
           <div class="project-title">${lesson.title}</div>
@@ -540,6 +559,7 @@ function renderProjectCard(lesson, stage) {
           <ol class="project-steps">
             ${(lesson.steps || []).map((s, i) => `<li><span class="step-num">${i+1}</span>${s}</li>`).join('')}
           </ol>
+          ${setupHtml}
         </div>
       </div>
     </div>`;

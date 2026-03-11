@@ -1865,26 +1865,43 @@ Output format: code blocks with explanations above them."""`,
             "Simple React frontend with file upload and results display",
             "Deploy on Railway or Render (free tier)"
           ],
-          code: `import anthropic
+          setup: {
+            where: "VS Code (local) — Python 3.10+",
+            install: "pip install anthropic fastapi uvicorn PyPDF2 python-multipart",
+            env: "export ANTHROPIC_API_KEY='sk-ant-...'   # Windows: set ANTHROPIC_API_KEY=...",
+            run: "uvicorn main:app --reload   # API runs at http://localhost:8000",
+            test: "POST http://localhost:8000/analyze  with a PDF file + job_desc form field. Try with curl or Postman, or use the React frontend.",
+          },
+          code: `# ── Project 1: AI Resume Analyzer ────────────────────────────────────────────
+# Stack: Python · FastAPI · Claude API · PyPDF2
+# Run:   uvicorn main:app --reload
+# Test:  POST /analyze  (multipart: resume PDF + job_desc text)
+# ─────────────────────────────────────────────────────────────────────────────
+
+import anthropic                              # Anthropic Python SDK
 import json
-from fastapi import FastAPI, UploadFile
-import PyPDF2
+from fastapi import FastAPI, UploadFile       # FastAPI: modern async web framework
+import PyPDF2                                 # Extract text from PDF files
 import io
 
 app    = FastAPI()
-client = anthropic.Anthropic()
+client = anthropic.Anthropic()               # Reads ANTHROPIC_API_KEY from env
 
 def extract_pdf_text(file_bytes: bytes) -> str:
+    """Convert raw PDF bytes → plain text by reading all pages."""
     reader = PyPDF2.PdfReader(io.BytesIO(file_bytes))
     return " ".join(page.extract_text() for page in reader.pages)
 
 @app.post("/analyze")
 async def analyze_resume(
-    resume:  UploadFile,
-    job_desc: str
+    resume:   UploadFile,   # Uploaded PDF file (multipart form field)
+    job_desc: str           # Job description pasted as plain text
 ):
+    # Step 1: Convert the uploaded PDF to plain text
     resume_text = extract_pdf_text(await resume.read())
 
+    # Step 2: Ask Claude to compare resume vs job description.
+    # We truncate inputs to stay well within Claude's token limits.
     response = client.messages.create(
         model="claude-opus-4-6",
         max_tokens=1500,
@@ -1908,6 +1925,7 @@ Return JSON:
 }}"""
         }]
     )
+    # Step 3: Claude returns a JSON string — parse it and return as HTTP response
     return json.loads(response.content[0].text)`
         },
 
@@ -1932,17 +1950,34 @@ Return JSON:
             "Display source documents with page numbers for transparency",
             "Add memory: maintain last 5 exchanges in context"
           ],
-          code: `import streamlit as st
-from langchain.vectorstores import Chroma
-from langchain.embeddings import HuggingFaceEmbeddings
+          setup: {
+            where: "VS Code (local) — Python 3.10+",
+            install: "pip install streamlit langchain langchain-community chromadb sentence-transformers anthropic PyPDF2",
+            env: "export ANTHROPIC_API_KEY='sk-ant-...'",
+            run: "streamlit run app.py   # opens http://localhost:8501 in your browser",
+            test: "Upload a PDF, then type a question about its content. The bot should reply with [Source: filename] citations.",
+            colab: "https://colab.research.google.com/",
+          },
+          code: `# ── Project 2: RAG Chatbot ───────────────────────────────────────────────────
+# Stack: Python · Streamlit · LangChain · ChromaDB · Claude API
+# Run:   streamlit run app.py
+# Colab: add  !pip install ...  then run with pyngrok for a public URL
+# ─────────────────────────────────────────────────────────────────────────────
+
+import streamlit as st
+from langchain.vectorstores import Chroma                        # Local vector DB
+from langchain.embeddings import HuggingFaceEmbeddings           # Free embeddings model
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 import anthropic
 
-@st.cache_resource
+@st.cache_resource          # Load the embedding model once and cache across reruns
 def load_embeddings():
+    # BAAI/bge-small-en-v1.5: fast, free, ~130 MB — good quality for RAG
     return HuggingFaceEmbeddings(model_name="BAAI/bge-small-en-v1.5")
 
 def build_prompt(context: str, history: list, question: str) -> str:
+    """Assemble the full prompt: grounding instructions + retrieved context
+    + recent chat history + the current question."""
     return f"""You are a helpful assistant. Answer using ONLY the context below.
 Always cite your sources as [Source: filename, p.X].
 
@@ -1955,13 +1990,14 @@ Conversation:
 User: {question}
 Assistant:"""
 
-# Streamlit app
+# ── Streamlit UI ──────────────────────────────────────────────────────────────
 st.title("Chat with your Documents")
 uploaded = st.file_uploader("Upload PDFs", type="pdf", accept_multiple_files=True)
 
 if uploaded and "vectorstore" not in st.session_state:
     with st.spinner("Indexing documents..."):
-        # chunk + embed + store
+        # Pipeline: PDF bytes → text chunks → embeddings → stored in Chroma
+        # chunk_overlap=50 keeps sentences from being cut at boundaries
         splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
         # ... (see full code in repo)
         st.success(f"Indexed {len(uploaded)} documents")`
@@ -1988,36 +2024,66 @@ if uploaded and "vectorstore" not in st.session_state:
             "Export model with torch.save(). Achieve 95%+ on test set",
             "FastAPI + Pillow: accept image upload → preprocess → predict → return JSON with disease + treatment tips"
           ],
-          code: `import torch
+          setup: {
+            where: "Google Colab (training, needs GPU) → VS Code (serving)",
+            install: "pip install torch torchvision fastapi uvicorn Pillow python-multipart",
+            env: "# No API key needed — uses a local PyTorch model file",
+            run: "uvicorn server:app --reload   # after training produces plant_model.pth",
+            test: "POST /predict with an image file. Returns disease label, confidence %, and treatment advice.",
+            colab: "https://colab.research.google.com/",
+          },
+          code: `# ── Project 3: Plant Disease Detector ───────────────────────────────────────
+# Stack: PyTorch · EfficientNet · FastAPI · Pillow
+#
+# STEP 1 — Train in Google Colab (free GPU):
+#   1. Get dataset: kaggle datasets download -d abdallahalidev/plantvillage-dataset
+#   2. Fine-tune EfficientNet-B0 on 38 disease classes (see training script)
+#   3. Save:  torch.save(model.state_dict(), 'plant_model.pth')
+#
+# STEP 2 — Serve locally in VS Code:
+#   pip install torch torchvision fastapi uvicorn Pillow python-multipart
+#   uvicorn server:app --reload
+# ─────────────────────────────────────────────────────────────────────────────
+
+import torch
 import torch.nn as nn
 from torchvision import models, transforms
 from PIL import Image
 import io
 
-# ── Load fine-tuned model ─────────────────────────────────
-CLASSES = ['Apple___Apple_scab', 'Apple___Black_rot', ...]  # 38 classes
+# ── Model Setup ───────────────────────────────────────────────────────────────
+CLASSES = ['Apple___Apple_scab', 'Apple___Black_rot', ...]  # 38 disease classes
 TREATMENTS = {
     'Apple___Apple_scab': "Apply fungicide. Remove infected leaves.",
-    # ...
+    # ... add one entry per class
 }
 
+# Recreate the exact same architecture used during training
 model = models.efficientnet_b0(weights=None)
+# Override the final layer: 1280 features → 38 disease classes (not 1000 ImageNet)
 model.classifier[1] = nn.Linear(1280, len(CLASSES))
+# Load your trained weights (map_location='cpu' works without a GPU)
 model.load_state_dict(torch.load('plant_model.pth', map_location='cpu'))
-model.eval()
+model.eval()                             # Disable dropout — we're doing inference
 
+# ── Preprocessing ─────────────────────────────────────────────────────────────
+# Must match the transforms used during training exactly — otherwise predictions break
 transform = transforms.Compose([
-    transforms.Resize((224, 224)),
-    transforms.ToTensor(),
-    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    transforms.Resize((224, 224)),       # EfficientNet-B0 expects 224×224 input
+    transforms.ToTensor(),               # PIL Image → float tensor in [0, 1]
+    transforms.Normalize(               # Subtract ImageNet mean, divide by std
+        mean=[0.485, 0.456, 0.406],     # These constants come from ImageNet stats
+        std=[0.229, 0.224, 0.225]
+    )
 ])
 
 def predict(image_bytes: bytes) -> dict:
+    """Run inference: bytes → disease label + confidence % + treatment tip."""
     img    = Image.open(io.BytesIO(image_bytes)).convert('RGB')
-    tensor = transform(img).unsqueeze(0)
-    with torch.no_grad():
-        probs = torch.softmax(model(tensor), dim=1)[0]
-    top_idx    = probs.argmax().item()
+    tensor = transform(img).unsqueeze(0)   # Add batch dimension: [3,224,224] → [1,3,224,224]
+    with torch.no_grad():                  # Disable gradient tracking (saves memory)
+        probs = torch.softmax(model(tensor), dim=1)[0]  # Logits → probabilities
+    top_idx    = probs.argmax().item()     # Index of the highest-probability class
     confidence = probs[top_idx].item()
     disease    = CLASSES[top_idx]
     return {
@@ -2049,17 +2115,34 @@ def predict(image_bytes: bytes) -> dict:
             "Export summary as PDF/markdown",
             "Track history: show previous summaries in sidebar"
           ],
-          code: `import anthropic
+          setup: {
+            where: "VS Code (local) — Python 3.10+",
+            install: "pip install anthropic streamlit PyPDF2 python-docx newspaper3k",
+            env: "export ANTHROPIC_API_KEY='sk-ant-...'",
+            run: "streamlit run app.py   # opens http://localhost:8501",
+            test: "Upload a multi-page PDF (e.g. a research paper). You should get an executive summary, bullet points, and be able to ask questions about it.",
+          },
+          code: `# ── Project 4: Document Summarizer ──────────────────────────────────────────
+# Stack: Python · Claude API · Streamlit · PyPDF2
+# Run:   streamlit run app.py
+# Or test core logic standalone: python summarizer.py
+# ─────────────────────────────────────────────────────────────────────────────
 
-client = anthropic.Anthropic()
+import anthropic
+
+client = anthropic.Anthropic()   # Reads ANTHROPIC_API_KEY from environment
 
 def chunk_text(text: str, max_chars: int = 3000) -> list[str]:
-    """Split text at paragraph boundaries."""
-    paragraphs = text.split('\n\n')
+    """Split a long document into chunks at paragraph boundaries.
+
+    Why paragraph boundaries? Splitting mid-sentence loses context.
+    max_chars ≈ 750 tokens — small enough for Claude Haiku's fast inference.
+    """
+    paragraphs = text.split('\\n\\n')
     chunks, current = [], ''
     for para in paragraphs:
         if len(current) + len(para) < max_chars:
-            current += '\n\n' + para
+            current += '\\n\\n' + para
         else:
             if current: chunks.append(current.strip())
             current = para
@@ -2067,23 +2150,31 @@ def chunk_text(text: str, max_chars: int = 3000) -> list[str]:
     return chunks
 
 def map_reduce_summarize(text: str) -> dict:
+    """Summarize any-length document using a two-pass Map-Reduce strategy.
+
+    MAP    — Fast, cheap Claude Haiku summarizes each chunk independently.
+    REDUCE — More capable Claude Opus synthesizes chunk summaries into a
+             structured final output (executive summary + key points).
+
+    This pattern handles documents of any length and minimises API cost.
+    """
     chunks = chunk_text(text)
 
-    # MAP: summarize each chunk
+    # MAP: call Haiku once per chunk in sequence
     chunk_summaries = []
-    for i, chunk in enumerate(chunks):
+    for chunk in chunks:
         resp = client.messages.create(
-            model="claude-haiku-4-5-20251001",  # Fast + cheap for map step
+            model="claude-haiku-4-5-20251001",  # Fast + cheap for the map step
             max_tokens=300,
             messages=[{"role": "user",
-                        "content": f"Summarize in 3-5 sentences:\n{chunk}"}]
+                        "content": f"Summarize in 3-5 sentences:\\n{chunk}"}]
         )
         chunk_summaries.append(resp.content[0].text)
 
-    # REDUCE: final summary
-    combined = "\n\n".join(chunk_summaries)
+    # REDUCE: send all chunk summaries to Opus for the final synthesis
+    combined = "\\n\\n".join(chunk_summaries)
     final = client.messages.create(
-        model="claude-opus-4-6",
+        model="claude-opus-4-6",             # More capable model for final output
         max_tokens=800,
         system="Expert document analyst. Be concise.",
         messages=[{"role": "user", "content": f"""
@@ -2116,34 +2207,66 @@ Return JSON: {{"executive_summary": "...", "key_points": [...5 items], "conclusi
             "For Fix Bug: show diff and apply changes with workspace.applyEdit",
             "Package with vsce and publish to VS Code Marketplace"
           ],
-          code: `// extension.ts — VS Code Extension
-import * as vscode from 'vscode';
+          setup: {
+            where: "VS Code — TypeScript (Extension Development Host)",
+            install: "npm install -g yo generator-code vsce   # then: yo code → pick TypeScript",
+            env: "Add ANTHROPIC_API_KEY to .env or VS Code settings.json",
+            run: "cd my-extension && npm install @anthropic-ai/sdk && press F5 to open Extension Host",
+            test: "In the Extension Host window: select some code → Ctrl+Shift+P → 'AI: Explain Code'. A side panel should appear with a streaming explanation.",
+          },
+          code: `// ── Project 5: AI Code Assistant (VS Code Extension) ────────────────────────
+// Stack: TypeScript · VS Code API · Claude API (streaming)
+//
+// Scaffold a new extension:
+//   npm install -g yo generator-code
+//   yo code                    ← choose "TypeScript Extension"
+//   cd my-extension
+//   npm install @anthropic-ai/sdk
+//
+// Debug in VS Code:
+//   Press F5  → opens an "Extension Development Host" window
+//   Select code → Ctrl+Shift+P → type "AI: Explain Code"
+//
+// Package for distribution:
+//   npm install -g vsce
+//   vsce package               ← produces a .vsix installer
+// ─────────────────────────────────────────────────────────────────────────────
+
+import * as vscode from 'vscode';      // VS Code extension API
 import Anthropic from '@anthropic-ai/sdk';
 
-const client = new Anthropic();
+const client = new Anthropic();        // Reads ANTHROPIC_API_KEY from process.env
 
+// activate() is called by VS Code the first time the extension is used
 export function activate(context: vscode.ExtensionContext) {
 
+    // Register the "Explain Code" command (matches package.json contributes.commands)
     const explainCode = vscode.commands.registerCommand(
         'ai-assistant.explain', async () => {
         const editor = vscode.window.activeTextEditor;
         if (!editor) return;
 
+        // Grab the text the user has highlighted with their cursor
         const selection = editor.selection;
         const code      = editor.document.getText(selection);
-        const language  = editor.document.languageId;
+        const language  = editor.document.languageId;  // e.g. "python", "typescript"
 
         if (!code) {
             vscode.window.showWarningMessage('Select code first');
             return;
         }
 
+        // Open a side-by-side panel to show the explanation
         const panel = vscode.window.createWebviewPanel(
-            'aiExplanation', 'AI Explanation', vscode.ViewColumn.Beside, {}
+            'aiExplanation',           // Internal panel ID (must be unique)
+            'AI Explanation',          // Title shown in the tab
+            vscode.ViewColumn.Beside,  // Open beside the active editor
+            {}
         );
 
-        panel.webview.html = getLoadingHtml();
+        panel.webview.html = getLoadingHtml();   // Show spinner while API responds
 
+        // Stream the response token-by-token for a snappy, real-time feel
         const stream = await client.messages.stream({
             model: 'claude-opus-4-6',
             max_tokens: 1024,
@@ -2154,6 +2277,7 @@ export function activate(context: vscode.ExtensionContext) {
             }]
         });
 
+        // Update the panel as each token arrives — user sees output immediately
         let explanation = '';
         for await (const chunk of stream.text_stream) {
             explanation += chunk;
@@ -2161,6 +2285,7 @@ export function activate(context: vscode.ExtensionContext) {
         }
     });
 
+    // Register for cleanup when the extension is deactivated
     context.subscriptions.push(explainCode);
 }`
         }
