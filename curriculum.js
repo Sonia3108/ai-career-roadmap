@@ -1867,66 +1867,105 @@ Output format: code blocks with explanations above them."""`,
           ],
           setup: {
             where: "VS Code (local) — Python 3.10+",
-            install: "pip install anthropic fastapi uvicorn PyPDF2 python-multipart",
-            env: "export ANTHROPIC_API_KEY='sk-ant-...'   # Windows: set ANTHROPIC_API_KEY=...",
-            run: "uvicorn main:app --reload   # API runs at http://localhost:8000",
-            test: "POST http://localhost:8000/analyze  with a PDF file + job_desc form field. Try with curl or Postman, or use the React frontend.",
+            install: "pip install anthropic fastapi uvicorn PyPDF2 python-multipart python-docx",
+            env: "export ANTHROPIC_API_KEY='sk-ant-...'   # Windows: set ANTHROPIC_API_KEY=sk-ant-...",
+            run: "uvicorn main:app --reload   # API at http://localhost:8000  |  docs at /docs",
+            test: "curl -X POST http://localhost:8000/analyze -F 'resume=@my_resume.pdf' -F 'job_desc=Software Engineer at Google'  — or open /docs in your browser for a built-in test UI.",
           },
-          code: `# ── Project 1: AI Resume Analyzer ────────────────────────────────────────────
-# Stack: Python · FastAPI · Claude API · PyPDF2
-# Run:   uvicorn main:app --reload
-# Test:  POST /analyze  (multipart: resume PDF + job_desc text)
+          code: `# ── Project 1: AI Resume Analyzer  (main.py) ────────────────────────────────
+# Stack: Python · FastAPI · Claude API · PyPDF2 · python-docx
+#
+# Install:  pip install anthropic fastapi uvicorn PyPDF2 python-multipart python-docx
+# Set key:  export ANTHROPIC_API_KEY='sk-ant-...'
+# Run:      uvicorn main:app --reload
+# Test UI:  open http://localhost:8000/docs in your browser (FastAPI auto-generates it)
+#
+# Quick curl test:
+#   curl -X POST http://localhost:8000/analyze \\
+#        -F "resume=@my_resume.pdf" \\
+#        -F "job_desc=Senior Python Engineer at Stripe"
 # ─────────────────────────────────────────────────────────────────────────────
 
-import anthropic                              # Anthropic Python SDK
+import anthropic
 import json
-from fastapi import FastAPI, UploadFile       # FastAPI: modern async web framework
-import PyPDF2                                 # Extract text from PDF files
 import io
+from fastapi import FastAPI, UploadFile, Form   # Form() is required for multipart requests
+from fastapi.middleware.cors import CORSMiddleware
+import PyPDF2
+import docx                                    # python-docx: reads .docx files
 
-app    = FastAPI()
-client = anthropic.Anthropic()               # Reads ANTHROPIC_API_KEY from env
+app    = FastAPI(title="AI Resume Analyzer")
+client = anthropic.Anthropic()                 # Reads ANTHROPIC_API_KEY from env
 
-def extract_pdf_text(file_bytes: bytes) -> str:
-    """Convert raw PDF bytes → plain text by reading all pages."""
+# Allow the React frontend (or any local page) to call this API
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+# ── Text Extraction ───────────────────────────────────────────────────────────
+
+def extract_pdf(file_bytes: bytes) -> str:
+    """PDF → plain text by concatenating all pages."""
     reader = PyPDF2.PdfReader(io.BytesIO(file_bytes))
-    return " ".join(page.extract_text() for page in reader.pages)
+    return " ".join(page.extract_text() or "" for page in reader.pages)
+
+def extract_docx(file_bytes: bytes) -> str:
+    """DOCX → plain text by joining all paragraphs."""
+    doc = docx.Document(io.BytesIO(file_bytes))
+    return " ".join(p.text for p in doc.paragraphs if p.text.strip())
+
+def extract_text(filename: str, file_bytes: bytes) -> str:
+    """Dispatch to the right extractor based on file extension."""
+    if filename.lower().endswith(".pdf"):
+        return extract_pdf(file_bytes)
+    elif filename.lower().endswith(".docx"):
+        return extract_docx(file_bytes)
+    raise ValueError(f"Unsupported file type: {filename}")
+
+# ── API Endpoint ──────────────────────────────────────────────────────────────
 
 @app.post("/analyze")
 async def analyze_resume(
-    resume:   UploadFile,   # Uploaded PDF file (multipart form field)
-    job_desc: str           # Job description pasted as plain text
+    resume:   UploadFile,           # PDF or DOCX uploaded as multipart file
+    job_desc: str = Form(...)       # Form() is required when mixing file + text fields
 ):
-    # Step 1: Convert the uploaded PDF to plain text
-    resume_text = extract_pdf_text(await resume.read())
+    # Step 1: Extract text from the uploaded resume
+    file_bytes  = await resume.read()
+    resume_text = extract_text(resume.filename, file_bytes)
 
-    # Step 2: Ask Claude to compare resume vs job description.
-    # We truncate inputs to stay well within Claude's token limits.
+    # Step 2: Send both texts to Claude with a structured JSON prompt.
+    # Truncating to 3000/2000 chars keeps us well within Claude's token budget.
     response = client.messages.create(
         model="claude-opus-4-6",
         max_tokens=1500,
-        system="You are an expert HR analyst. Return ONLY valid JSON.",
+        system="You are an expert HR analyst. Return ONLY valid JSON, no extra text.",
         messages=[{
             "role": "user",
             "content": f"""Analyze this resume against the job description.
 
-Resume: {resume_text[:3000]}
+Resume:
+{resume_text[:3000]}
 
-Job Description: {job_desc[:2000]}
+Job Description:
+{job_desc[:2000]}
 
-Return JSON:
+Return this exact JSON structure:
 {{
-  "match_score": 0-100,
-  "matching_skills": ["list"],
-  "missing_skills": ["list"],
-  "strengths": ["list of 3"],
-  "improvements": ["list of 3 actionable items"],
-  "summary": "2 sentence overview"
+  "match_score": <integer 0-100>,
+  "matching_skills": ["skill1", "skill2"],
+  "missing_skills": ["skill1", "skill2"],
+  "strengths": ["strength1", "strength2", "strength3"],
+  "improvements": ["action1", "action2", "action3"],
+  "summary": "Two sentence overview of fit."
 }}"""
         }]
     )
-    # Step 3: Claude returns a JSON string — parse it and return as HTTP response
-    return json.loads(response.content[0].text)`
+
+    # Step 3: Claude returns JSON as a string — parse and return as HTTP JSON
+    return json.loads(response.content[0].text)
+
+# ── Optional: health check ────────────────────────────────────────────────────
+@app.get("/")
+def root():
+    return {"status": "ok", "docs": "/docs"}`
         },
 
         {
@@ -1952,55 +1991,111 @@ Return JSON:
           ],
           setup: {
             where: "VS Code (local) — Python 3.10+",
-            install: "pip install streamlit langchain langchain-community chromadb sentence-transformers anthropic PyPDF2",
+            install: "pip install streamlit langchain langchain-community chromadb sentence-transformers anthropic pypdf",
             env: "export ANTHROPIC_API_KEY='sk-ant-...'",
             run: "streamlit run app.py   # opens http://localhost:8501 in your browser",
-            test: "Upload a PDF, then type a question about its content. The bot should reply with [Source: filename] citations.",
-            colab: "https://colab.research.google.com/",
+            test: "Upload any PDF, wait for 'Indexed' confirmation, then type a question. Answers should include [Source: filename, p.N] citations.",
           },
-          code: `# ── Project 2: RAG Chatbot ───────────────────────────────────────────────────
+          code: `# ── Project 2: RAG Chatbot  (app.py) ────────────────────────────────────────
 # Stack: Python · Streamlit · LangChain · ChromaDB · Claude API
-# Run:   streamlit run app.py
-# Colab: add  !pip install ...  then run with pyngrok for a public URL
+#
+# Install:  pip install streamlit langchain langchain-community chromadb
+#                       sentence-transformers anthropic pypdf
+# Set key:  export ANTHROPIC_API_KEY='sk-ant-...'
+# Run:      streamlit run app.py
 # ─────────────────────────────────────────────────────────────────────────────
 
 import streamlit as st
-from langchain.vectorstores import Chroma                        # Local vector DB
-from langchain.embeddings import HuggingFaceEmbeddings           # Free embeddings model
-from langchain.text_splitter import RecursiveCharacterTextSplitter
 import anthropic
+import tempfile, os
+from langchain_community.vectorstores import Chroma              # local vector DB
+from langchain_community.embeddings import HuggingFaceEmbeddings # free embedding model
+from langchain_community.document_loaders import PyPDFLoader     # PDF → LangChain docs
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 
-@st.cache_resource          # Load the embedding model once and cache across reruns
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+@st.cache_resource          # Download + load the model once; cache for all reruns
 def load_embeddings():
-    # BAAI/bge-small-en-v1.5: fast, free, ~130 MB — good quality for RAG
+    # BAAI/bge-small-en-v1.5: fast, free, ~130 MB, good retrieval quality
     return HuggingFaceEmbeddings(model_name="BAAI/bge-small-en-v1.5")
 
-def build_prompt(context: str, history: list, question: str) -> str:
-    """Assemble the full prompt: grounding instructions + retrieved context
-    + recent chat history + the current question."""
-    return f"""You are a helpful assistant. Answer using ONLY the context below.
-Always cite your sources as [Source: filename, p.X].
+def index_files(uploaded_files, embeddings):
+    """PDF files → chunked docs → embeddings → ChromaDB in memory."""
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=500,     # ~125 tokens per chunk — fits well in context
+        chunk_overlap=50    # overlap prevents losing context at chunk boundaries
+    )
+    all_docs = []
+    for f in uploaded_files:
+        # PyPDFLoader needs a real file path, so write to a temp file first
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            tmp.write(f.read())
+            tmp_path = tmp.name
+        pages  = PyPDFLoader(tmp_path).load()       # each page = one Document
+        chunks = splitter.split_documents(pages)
+        for chunk in chunks:
+            chunk.metadata["source"] = f.name       # tag each chunk with filename
+        all_docs.extend(chunks)
+        os.unlink(tmp_path)                         # clean up temp file
+    return Chroma.from_documents(all_docs, embeddings)
 
-Context:
-{context}
+def retrieve(vectorstore, question: str, k: int = 5) -> str:
+    """Embed the question, find the k most similar chunks, return as a string."""
+    docs = vectorstore.similarity_search(question, k=k)
+    return "\\n\\n".join(
+        f"[Source: {d.metadata.get('source','?')}, p.{d.metadata.get('page',0)+1}]\\n{d.page_content}"
+        for d in docs
+    )
 
-Conversation:
-{chr(10).join(f"{m['role']}: {m['content']}" for m in history[-4:])}
+# ── Streamlit App ─────────────────────────────────────────────────────────────
 
-User: {question}
-Assistant:"""
-
-# ── Streamlit UI ──────────────────────────────────────────────────────────────
 st.title("Chat with your Documents")
-uploaded = st.file_uploader("Upload PDFs", type="pdf", accept_multiple_files=True)
+embeddings = load_embeddings()
+uploaded   = st.file_uploader("Upload PDFs", type="pdf", accept_multiple_files=True)
 
+# Index documents once per session (cached in st.session_state)
 if uploaded and "vectorstore" not in st.session_state:
-    with st.spinner("Indexing documents..."):
-        # Pipeline: PDF bytes → text chunks → embeddings → stored in Chroma
-        # chunk_overlap=50 keeps sentences from being cut at boundaries
-        splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-        # ... (see full code in repo)
-        st.success(f"Indexed {len(uploaded)} documents")`
+    with st.spinner("Indexing documents — this may take a minute..."):
+        st.session_state.vectorstore = index_files(uploaded, embeddings)
+        st.session_state.history     = []
+    st.success(f"Indexed {len(uploaded)} document(s). Start chatting below!")
+
+# Render existing chat history
+if "history" in st.session_state:
+    for msg in st.session_state.history:
+        st.chat_message(msg["role"]).write(msg["content"])
+
+# Chat input
+if "vectorstore" in st.session_state:
+    question = st.chat_input("Ask a question about your documents...")
+    if question:
+        st.chat_message("user").write(question)
+        st.session_state.history.append({"role": "user", "content": question})
+
+        # Retrieve the most relevant chunks, then ask Claude
+        context = retrieve(st.session_state.vectorstore, question)
+        prompt  = (
+            "Answer using ONLY the context below. "
+            "Cite sources as [Source: filename, p.N].\\n\\n"
+            f"Context:\\n{context}\\n\\nQuestion: {question}"
+        )
+
+        client = anthropic.Anthropic()
+        with st.chat_message("assistant"):
+            placeholder = st.empty()
+            answer = ""
+            # Stream Claude's response token-by-token for a real-time feel
+            with client.messages.stream(
+                model="claude-opus-4-6",
+                max_tokens=1000,
+                messages=[{"role": "user", "content": prompt}]
+            ) as stream:
+                for token in stream.text_stream:
+                    answer += token
+                    placeholder.markdown(answer)   # update UI as tokens arrive
+
+        st.session_state.history.append({"role": "assistant", "content": answer})`
         },
 
         {
@@ -2191,73 +2286,135 @@ def predict(image_bytes: bytes, model, classes) -> dict:
           ],
           setup: {
             where: "VS Code (local) — Python 3.10+",
-            install: "pip install anthropic streamlit PyPDF2 python-docx newspaper3k",
+            install: "pip install anthropic streamlit PyPDF2 python-docx",
             env: "export ANTHROPIC_API_KEY='sk-ant-...'",
             run: "streamlit run app.py   # opens http://localhost:8501",
-            test: "Upload a multi-page PDF (e.g. a research paper). You should get an executive summary, bullet points, and be able to ask questions about it.",
+            test: "Upload any multi-page PDF (e.g. a research paper). You should see an executive summary, bullet-point key points, and a Q&A input box.",
           },
-          code: `# ── Project 4: Document Summarizer ──────────────────────────────────────────
-# Stack: Python · Claude API · Streamlit · PyPDF2
-# Run:   streamlit run app.py
-# Or test core logic standalone: python summarizer.py
+          code: `# ── Project 4: Document Summarizer  (app.py) ────────────────────────────────
+# Stack: Python · Claude API · Streamlit · PyPDF2 · python-docx
+#
+# Install:  pip install anthropic streamlit PyPDF2 python-docx
+# Set key:  export ANTHROPIC_API_KEY='sk-ant-...'
+# Run:      streamlit run app.py
 # ─────────────────────────────────────────────────────────────────────────────
 
 import anthropic
+import json
+import io
+import streamlit as st
+import PyPDF2
+import docx
 
 client = anthropic.Anthropic()   # Reads ANTHROPIC_API_KEY from environment
 
-def chunk_text(text: str, max_chars: int = 3000) -> list[str]:
-    """Split a long document into chunks at paragraph boundaries.
+# ── Text Extraction ───────────────────────────────────────────────────────────
 
-    Why paragraph boundaries? Splitting mid-sentence loses context.
-    max_chars ≈ 750 tokens — small enough for Claude Haiku's fast inference.
-    """
-    paragraphs = text.split('\\n\\n')
-    chunks, current = [], ''
+def extract_text(file) -> str:
+    """Extract plain text from an uploaded PDF or DOCX file."""
+    name  = file.name.lower()
+    data  = file.read()
+    if name.endswith(".pdf"):
+        reader = PyPDF2.PdfReader(io.BytesIO(data))
+        return "\\n\\n".join(page.extract_text() or "" for page in reader.pages)
+    elif name.endswith(".docx"):
+        doc = docx.Document(io.BytesIO(data))
+        return "\\n\\n".join(p.text for p in doc.paragraphs if p.text.strip())
+    return data.decode("utf-8", errors="ignore")   # plain .txt fallback
+
+# ── Map-Reduce Summarization ──────────────────────────────────────────────────
+
+def chunk_text(text: str, max_chars: int = 3000) -> list:
+    """Split at paragraph boundaries to avoid cutting mid-sentence.
+    max_chars ≈ 750 tokens — fits comfortably in one Claude Haiku call."""
+    paragraphs = text.split("\\n\\n")
+    chunks, current = [], ""
     for para in paragraphs:
         if len(current) + len(para) < max_chars:
-            current += '\\n\\n' + para
+            current += "\\n\\n" + para
         else:
             if current: chunks.append(current.strip())
             current = para
     if current: chunks.append(current.strip())
     return chunks
 
-def map_reduce_summarize(text: str) -> dict:
-    """Summarize any-length document using a two-pass Map-Reduce strategy.
-
-    MAP    — Fast, cheap Claude Haiku summarizes each chunk independently.
-    REDUCE — More capable Claude Opus synthesizes chunk summaries into a
-             structured final output (executive summary + key points).
-
-    This pattern handles documents of any length and minimises API cost.
-    """
+def map_reduce_summarize(text: str, progress) -> dict:
+    """Two-pass strategy: MAP with cheap Haiku per chunk, REDUCE with Opus.
+    Cost: Haiku is ~25x cheaper than Opus — use it for the bulk of the work."""
     chunks = chunk_text(text)
-
-    # MAP: call Haiku once per chunk in sequence
     chunk_summaries = []
-    for chunk in chunks:
+
+    # MAP: Haiku summarizes each chunk independently (fast, cheap)
+    for i, chunk in enumerate(chunks):
+        progress.progress((i + 1) / (len(chunks) + 1),
+                          text=f"Summarizing chunk {i+1}/{len(chunks)}...")
         resp = client.messages.create(
-            model="claude-haiku-4-5-20251001",  # Fast + cheap for the map step
+            model="claude-haiku-4-5-20251001",   # Fast + cheap for map step
             max_tokens=300,
             messages=[{"role": "user",
-                        "content": f"Summarize in 3-5 sentences:\\n{chunk}"}]
+                       "content": f"Summarize in 3-5 sentences:\\n{chunk}"}]
         )
         chunk_summaries.append(resp.content[0].text)
 
-    # REDUCE: send all chunk summaries to Opus for the final synthesis
+    # REDUCE: Opus combines all chunk summaries into a structured final output
+    progress.progress(1.0, text="Generating final summary...")
     combined = "\\n\\n".join(chunk_summaries)
     final = client.messages.create(
-        model="claude-opus-4-6",             # More capable model for final output
+        model="claude-opus-4-6",                 # Stronger model for final synthesis
         max_tokens=800,
-        system="Expert document analyst. Be concise.",
+        system="Expert document analyst. Be concise and structured.",
         messages=[{"role": "user", "content": f"""
 Create a structured summary from these section summaries:
 {combined}
 
-Return JSON: {{"executive_summary": "...", "key_points": [...5 items], "conclusion": "..."}}"""}]
+Return ONLY this JSON (no extra text):
+{{
+  "executive_summary": "2-3 sentence overview",
+  "key_points": ["point 1", "point 2", "point 3", "point 4", "point 5"],
+  "conclusion": "1-2 sentence takeaway"
+}}"""}]
     )
-    return final`
+    # ⚠ Must call .content[0].text to get the string, then parse the JSON
+    return json.loads(final.content[0].text)
+
+# ── Streamlit App ─────────────────────────────────────────────────────────────
+
+st.title("Document Summarizer")
+st.caption("Upload a PDF, DOCX, or TXT file to get an AI-generated summary.")
+
+uploaded = st.file_uploader("Choose a document", type=["pdf", "docx", "txt"])
+
+if uploaded and st.button("Summarize"):
+    with st.spinner("Extracting text..."):
+        text = extract_text(uploaded)
+    st.info(f"Extracted {len(text):,} characters ({len(text)//4:,} est. tokens)")
+
+    progress = st.progress(0, text="Starting...")
+    result   = map_reduce_summarize(text, progress)
+    progress.empty()
+
+    st.subheader("Executive Summary")
+    st.write(result["executive_summary"])
+
+    st.subheader("Key Points")
+    for point in result["key_points"]:
+        st.markdown(f"- {point}")
+
+    st.subheader("Conclusion")
+    st.write(result["conclusion"])
+
+    # Simple Q&A on the same document
+    st.divider()
+    question = st.text_input("Ask a question about this document")
+    if question:
+        with st.spinner("Answering..."):
+            qa = client.messages.create(
+                model="claude-opus-4-6",
+                max_tokens=500,
+                messages=[{"role": "user",
+                           "content": f"Document:\\n{text[:8000]}\\n\\nQuestion: {question}"}]
+            )
+        st.write(qa.content[0].text)`
         },
 
         {
@@ -2283,83 +2440,118 @@ Return JSON: {{"executive_summary": "...", "key_points": [...5 items], "conclusi
           ],
           setup: {
             where: "VS Code — TypeScript (Extension Development Host)",
-            install: "npm install -g yo generator-code vsce   # then: yo code → pick TypeScript",
-            env: "Add ANTHROPIC_API_KEY to .env or VS Code settings.json",
-            run: "cd my-extension && npm install @anthropic-ai/sdk && press F5 to open Extension Host",
-            test: "In the Extension Host window: select some code → Ctrl+Shift+P → 'AI: Explain Code'. A side panel should appear with a streaming explanation.",
+            install: "npm install -g yo generator-code   # scaffold: yo code → TypeScript Extension",
+            env: "In the generated .env or launch.json: ANTHROPIC_API_KEY=sk-ant-...",
+            run: "cd my-extension && npm install @anthropic-ai/sdk && press F5 → Extension Development Host opens",
+            test: "In the new VS Code window: select any code → Ctrl+Shift+P → 'AI: Explain Code' → a side panel appears with a streaming explanation.",
           },
-          code: `// ── Project 5: AI Code Assistant (VS Code Extension) ────────────────────────
+          code: `// ── Project 5: AI Code Assistant  (extension.ts) ───────────────────────────
 // Stack: TypeScript · VS Code API · Claude API (streaming)
 //
-// Scaffold a new extension:
-//   npm install -g yo generator-code
-//   yo code                    ← choose "TypeScript Extension"
-//   cd my-extension
-//   npm install @anthropic-ai/sdk
+// 1. Scaffold:  npm install -g yo generator-code
+//               yo code  → choose "New Extension (TypeScript)"
+//               cd my-extension
+//               npm install @anthropic-ai/sdk
 //
-// Debug in VS Code:
-//   Press F5  → opens an "Extension Development Host" window
-//   Select code → Ctrl+Shift+P → type "AI: Explain Code"
+// 2. Add to package.json → "contributes" → "commands":
+//    { "command": "ai-assistant.explain", "title": "AI: Explain Code" }
 //
-// Package for distribution:
-//   npm install -g vsce
-//   vsce package               ← produces a .vsix installer
+// 3. Set API key in .vscode/launch.json → "env": { "ANTHROPIC_API_KEY": "sk-ant-..." }
+//
+// 4. Press F5 to launch the Extension Development Host window.
+//    Select code → Ctrl+Shift+P → "AI: Explain Code"
+//
+// 5. Package:   npm install -g vsce && vsce package  → my-extension.vsix
 // ─────────────────────────────────────────────────────────────────────────────
 
-import * as vscode from 'vscode';      // VS Code extension API
+import * as vscode from 'vscode';
 import Anthropic from '@anthropic-ai/sdk';
 
-const client = new Anthropic();        // Reads ANTHROPIC_API_KEY from process.env
+const client = new Anthropic();   // Reads ANTHROPIC_API_KEY from process.env
 
-// activate() is called by VS Code the first time the extension is used
+// ── Webview Helpers ───────────────────────────────────────────────────────────
+
+function getLoadingHtml(): string {
+    return \`<html><body style="background:#1e1e1e;color:#ccc;font:14px sans-serif;padding:20px">
+        <p>⏳ Thinking...</p>
+    </body></html>\`;
+}
+
+function renderMarkdown(text: string): string {
+    // Minimal Markdown → HTML: code blocks, inline code, bold, newlines
+    const esc  = (s: string) => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const html = esc(text)
+        .replace(/\`\`\`([\\s\\S]*?)\`\`\`/g, '<pre><code>$1</code></pre>')
+        .replace(/\`([^\`]+)\`/g,             '<code>$1</code>')
+        .replace(/\\*\\*(.+?)\\*\\*/g,           '<strong>$1</strong>')
+        .replace(/\\n/g,                       '<br>');
+    return \`<html><body style="background:#1e1e1e;color:#d4d4d4;font:14px/1.6 sans-serif;padding:20px">
+        <style>
+            code { background:#2d2d2d; padding:2px 5px; border-radius:3px; font-family:monospace; }
+            pre  { background:#2d2d2d; padding:12px; border-radius:6px; overflow-x:auto; }
+            pre code { background:none; padding:0; }
+        </style>
+        \${html}
+    </body></html>\`;
+}
+
+// ── Extension Entry Point ─────────────────────────────────────────────────────
+
+// activate() is called by VS Code the first time the extension is triggered
 export function activate(context: vscode.ExtensionContext) {
 
-    // Register the "Explain Code" command (matches package.json contributes.commands)
+    // ── Command: Explain Code ─────────────────────────────────────────────────
+    // Matches "ai-assistant.explain" in package.json → contributes → commands
     const explainCode = vscode.commands.registerCommand(
         'ai-assistant.explain', async () => {
+
         const editor = vscode.window.activeTextEditor;
         if (!editor) return;
 
-        // Grab the text the user has highlighted with their cursor
-        const selection = editor.selection;
-        const code      = editor.document.getText(selection);
-        const language  = editor.document.languageId;  // e.g. "python", "typescript"
+        const code     = editor.document.getText(editor.selection);
+        const language = editor.document.languageId;   // e.g. "python", "typescript"
 
-        if (!code) {
-            vscode.window.showWarningMessage('Select code first');
+        if (!code.trim()) {
+            vscode.window.showWarningMessage('Select some code first, then run AI: Explain Code');
             return;
         }
 
-        // Open a side-by-side panel to show the explanation
+        // Open a panel beside the current file to show the explanation
         const panel = vscode.window.createWebviewPanel(
-            'aiExplanation',           // Internal panel ID (must be unique)
-            'AI Explanation',          // Title shown in the tab
-            vscode.ViewColumn.Beside,  // Open beside the active editor
-            {}
+            'aiExplanation',            // internal ID (unique per panel type)
+            \`Explain: \${language}\`,   // tab title
+            vscode.ViewColumn.Beside,   // open to the right of the editor
+            { enableScripts: false }    // no JS needed in the webview
         );
 
-        panel.webview.html = getLoadingHtml();   // Show spinner while API responds
+        panel.webview.html = getLoadingHtml();
 
-        // Stream the response token-by-token for a snappy, real-time feel
-        const stream = await client.messages.stream({
+        // Stream response token-by-token so the user sees output immediately
+        const stream = client.messages.stream({
             model: 'claude-opus-4-6',
             max_tokens: 1024,
-            system: \`You are a code expert. Explain \${language} code clearly.\`,
+            system: \`You are a senior \${language} engineer. Explain code clearly and concisely.\`,
             messages: [{
                 role: 'user',
-                content: \`Explain this code:\n\\\`\\\`\\\`\${language}\n\${code}\n\\\`\\\`\\\`\`
+                content: \`Explain what this \${language} code does, step by step:\n\\\`\\\`\\\`\${language}\n\${code}\n\\\`\\\`\\\`\`
             }]
         });
 
-        // Update the panel as each token arrives — user sees output immediately
         let explanation = '';
-        for await (const chunk of stream.text_stream) {
-            explanation += chunk;
-            panel.webview.html = renderMarkdown(explanation);
+        for await (const chunk of stream) {
+            // The SDK emits different event types — we only want text deltas
+            if (chunk.type === 'content_block_delta' && chunk.delta.type === 'text_delta') {
+                explanation += chunk.delta.text;
+                panel.webview.html = renderMarkdown(explanation);
+            }
         }
     });
 
-    // Register for cleanup when the extension is deactivated
+    // ── Command: Generate Tests ───────────────────────────────────────────────
+    // Add more commands following the same pattern: registerCommand → read selection
+    // → build prompt → stream response into a panel or inline diff
+
+    // Register all commands for cleanup when extension is deactivated
     context.subscriptions.push(explainCode);
 }`
         }
