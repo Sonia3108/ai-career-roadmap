@@ -2016,82 +2016,156 @@ if uploaded and "vectorstore" not in st.session_state:
           description: "Upload a plant leaf photo. Detect disease type and severity using a fine-tuned EfficientNet. Suggest treatments.",
           architecture: `Image Upload → Preprocess → EfficientNet (fine-tuned) → Disease Class + Confidence → Treatment Lookup → Response`,
           steps: [
-            "Download PlantVillage dataset (38 classes, 54k images) from Kaggle",
-            "Load EfficientNet-B0 pretrained on ImageNet (torchvision.models)",
-            "Replace final classifier head: Linear(1280, 38)",
-            "Train with progressive unfreezing: head first, then full model",
-            "Augmentations: RandomHorizontalFlip, ColorJitter, RandomRotation",
-            "Export model with torch.save(). Achieve 95%+ on test set",
-            "FastAPI + Pillow: accept image upload → preprocess → predict → return JSON with disease + treatment tips"
+            "Colab: Runtime → T4 GPU. Upload kaggle.json, download PlantVillage dataset (38 classes, 54k images)",
+            "ImageFolder auto-reads class names from subfolder names → no manual label file needed",
+            "Load EfficientNet-B0 (ImageNet weights) and replace final layer: Linear(1280, 38)",
+            "Phase 1 — freeze backbone, train head only for 3 epochs (fast, safe)",
+            "Phase 2 — unfreeze all, fine-tune with lr=1e-4 + CosineAnnealingLR for 7 epochs → 95%+ val accuracy",
+            "torch.save() the weights → files.download() to get plant_model.pth onto your computer",
+            "Local FastAPI server loads the saved weights and exposes POST /predict for image uploads"
           ],
           setup: {
-            where: "Google Colab (training, needs GPU) → VS Code (serving)",
-            install: "pip install torch torchvision fastapi uvicorn Pillow python-multipart",
-            env: "# No API key needed — uses a local PyTorch model file",
-            run: "uvicorn server:app --reload   # after training produces plant_model.pth",
-            test: "POST /predict with an image file. Returns disease label, confidence %, and treatment advice.",
+            where: "Google Colab (training, free T4 GPU) → VS Code (serving)",
+            install: "torch + torchvision are pre-installed in Colab. Only need: !pip install Pillow",
+            env: "# No API key — pure PyTorch, no external service",
+            run: "Runtime → Change runtime type → T4 GPU, then run all cells top-to-bottom",
+            test: "After ~30 min training you should see val accuracy reach 95%+. Cell 7 shows how to call predict() on any leaf image.",
             colab: "https://colab.research.google.com/",
           },
-          code: `# ── Project 3: Plant Disease Detector ───────────────────────────────────────
-# Stack: PyTorch · EfficientNet · FastAPI · Pillow
-#
-# STEP 1 — Train in Google Colab (free GPU):
-#   1. Get dataset: kaggle datasets download -d abdallahalidev/plantvillage-dataset
-#   2. Fine-tune EfficientNet-B0 on 38 disease classes (see training script)
-#   3. Save:  torch.save(model.state_dict(), 'plant_model.pth')
-#
-# STEP 2 — Serve locally in VS Code:
-#   pip install torch torchvision fastapi uvicorn Pillow python-multipart
-#   uvicorn server:app --reload
-# ─────────────────────────────────────────────────────────────────────────────
+          code: `# ╔══════════════════════════════════════════════════════════════════════╗
+# ║  Project 3: Plant Disease Detector — Complete Colab Training Script  ║
+# ║  Runtime → Change runtime type → T4 GPU before running              ║
+# ╚══════════════════════════════════════════════════════════════════════╝
 
+# ── CELL 1: Dataset Download ──────────────────────────────────────────────────
+# One-time Kaggle setup (only needed once per Colab session):
+#   1. kaggle.com → Account → API → Create New Token  →  saves kaggle.json
+#   2. Colab sidebar → Files panel → Upload → select kaggle.json
+#   3. Run these lines (uncomment):
+# !mkdir -p ~/.kaggle && cp kaggle.json ~/.kaggle/ && chmod 600 ~/.kaggle/kaggle.json
+# !kaggle datasets download -d abdallahalidev/plantvillage-dataset
+# !unzip -q plantvillage-dataset.zip -d plantvillage
+
+# ── CELL 2: Imports & Config ──────────────────────────────────────────────────
 import torch
 import torch.nn as nn
-from torchvision import models, transforms
+import torch.optim as optim
+from torch.utils.data import DataLoader, random_split
+from torchvision import datasets, models, transforms
 from PIL import Image
 import io
 
-# ── Model Setup ───────────────────────────────────────────────────────────────
-CLASSES = ['Apple___Apple_scab', 'Apple___Black_rot', ...]  # 38 disease classes
-TREATMENTS = {
-    'Apple___Apple_scab': "Apply fungicide. Remove infected leaves.",
-    # ... add one entry per class
-}
+DEVICE      = 'cuda' if torch.cuda.is_available() else 'cpu'
+DATA_DIR    = 'plantvillage/plantvillage dataset/color'
+NUM_CLASSES = 38
+BATCH_SIZE  = 32
+print(f"Using: {DEVICE}")   # Should print 'cuda' when T4 GPU is active
 
-# Recreate the exact same architecture used during training
-model = models.efficientnet_b0(weights=None)
-# Override the final layer: 1280 features → 38 disease classes (not 1000 ImageNet)
-model.classifier[1] = nn.Linear(1280, len(CLASSES))
-# Load your trained weights (map_location='cpu' works without a GPU)
-model.load_state_dict(torch.load('plant_model.pth', map_location='cpu'))
-model.eval()                             # Disable dropout — we're doing inference
-
-# ── Preprocessing ─────────────────────────────────────────────────────────────
-# Must match the transforms used during training exactly — otherwise predictions break
-transform = transforms.Compose([
-    transforms.Resize((224, 224)),       # EfficientNet-B0 expects 224×224 input
-    transforms.ToTensor(),               # PIL Image → float tensor in [0, 1]
-    transforms.Normalize(               # Subtract ImageNet mean, divide by std
-        mean=[0.485, 0.456, 0.406],     # These constants come from ImageNet stats
-        std=[0.229, 0.224, 0.225]
-    )
+# ── CELL 3: Data Loaders ──────────────────────────────────────────────────────
+# Training augmentations add random variation to prevent overfitting
+train_tf = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.RandomHorizontalFlip(),
+    transforms.RandomRotation(15),
+    transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+    transforms.ToTensor(),
+    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+])
+# Validation: no augmentation — we want a clean accuracy measurement
+val_tf = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.ToTensor(),
+    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
 ])
 
-def predict(image_bytes: bytes) -> dict:
-    """Run inference: bytes → disease label + confidence % + treatment tip."""
+full_ds = datasets.ImageFolder(DATA_DIR, transform=train_tf)
+CLASSES = full_ds.classes          # 38 class names, read automatically from folder names
+n_val   = int(0.2 * len(full_ds))
+n_train = len(full_ds) - n_val
+train_ds, val_ds = random_split(full_ds, [n_train, n_val])
+
+train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True,  num_workers=2)
+val_loader   = DataLoader(val_ds,   batch_size=BATCH_SIZE, shuffle=False, num_workers=2)
+print(f"Train: {n_train}  Val: {n_val}  Classes: {len(CLASSES)}")
+
+# ── CELL 4: Model — Progressive Unfreezing ────────────────────────────────────
+# Phase 1 (3 epochs): freeze backbone, train only new classifier head
+#   → fast convergence, avoids corrupting pretrained features with noisy gradients
+# Phase 2 (7 epochs): unfreeze everything, fine-tune end-to-end with a low LR
+
+model = models.efficientnet_b0(weights='IMAGENET1K_V1')   # Start from ImageNet weights
+model.classifier[1] = nn.Linear(model.classifier[1].in_features, NUM_CLASSES)
+model = model.to(DEVICE)
+
+for param in model.features.parameters():   # Freeze backbone for Phase 1
+    param.requires_grad = False
+
+criterion = nn.CrossEntropyLoss()
+optimizer = optim.Adam(model.classifier.parameters(), lr=1e-3)
+
+# ── CELL 5: Training Loop ─────────────────────────────────────────────────────
+def run_epoch(model, loader, optimizer=None, train=True):
+    model.train() if train else model.eval()
+    total_loss, correct = 0, 0
+    ctx = torch.enable_grad() if train else torch.no_grad()
+    with ctx:
+        for imgs, labels in loader:
+            imgs, labels = imgs.to(DEVICE), labels.to(DEVICE)
+            out  = model(imgs)
+            loss = criterion(out, labels)
+            if train:
+                optimizer.zero_grad(); loss.backward(); optimizer.step()
+            total_loss += loss.item() * imgs.size(0)
+            correct    += (out.argmax(1) == labels).sum().item()
+    return total_loss / len(loader.dataset), correct / len(loader.dataset)
+
+print("Phase 1 — head only:")
+for ep in range(3):
+    _, tr_acc = run_epoch(model, train_loader, optimizer, train=True)
+    _, vl_acc = run_epoch(model, val_loader,   train=False)
+    print(f"  epoch {ep+1}: train {tr_acc:.1%}  val {vl_acc:.1%}")
+
+print("\\nPhase 2 — full fine-tune:")
+for param in model.features.parameters():   # Unfreeze entire backbone
+    param.requires_grad = True
+optimizer = optim.Adam(model.parameters(), lr=1e-4)   # Lower LR protects pretrained weights
+scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=7)
+for ep in range(7):
+    _, tr_acc = run_epoch(model, train_loader, optimizer, train=True)
+    _, vl_acc = run_epoch(model, val_loader,   train=False)
+    scheduler.step()
+    print(f"  epoch {ep+1}: train {tr_acc:.1%}  val {vl_acc:.1%}")
+
+# ── CELL 6: Save & Download ───────────────────────────────────────────────────
+torch.save(model.state_dict(), 'plant_model.pth')
+print("Saved plant_model.pth")
+
+from google.colab import files
+files.download('plant_model.pth')   # Downloads the file to your computer
+
+# ── CELL 7: Inference (copy this to your local FastAPI server) ────────────────
+infer_tf = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.ToTensor(),
+    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+])
+
+def predict(image_bytes: bytes, model, classes) -> dict:
+    """Classify a plant leaf: bytes → disease label + confidence %."""
     img    = Image.open(io.BytesIO(image_bytes)).convert('RGB')
-    tensor = transform(img).unsqueeze(0)   # Add batch dimension: [3,224,224] → [1,3,224,224]
-    with torch.no_grad():                  # Disable gradient tracking (saves memory)
-        probs = torch.softmax(model(tensor), dim=1)[0]  # Logits → probabilities
-    top_idx    = probs.argmax().item()     # Index of the highest-probability class
-    confidence = probs[top_idx].item()
-    disease    = CLASSES[top_idx]
+    tensor = infer_tf(img).unsqueeze(0).to(DEVICE)  # [3,224,224] → [1,3,224,224]
+    with torch.no_grad():
+        probs = torch.softmax(model(tensor), dim=1)[0]
+    idx = probs.argmax().item()
     return {
-        "disease":    disease,
-        "confidence": f"{confidence:.1%}",
-        "treatment":  TREATMENTS.get(disease, "Consult an expert."),
-        "is_healthy": "healthy" in disease.lower()
-    }`
+        "disease":    classes[idx],
+        "confidence": f"{probs[idx].item():.1%}",
+        "is_healthy": "healthy" in classes[idx].lower()
+    }
+
+# Test it — replace 'leaf.jpg' with any plant photo
+# result = predict(open('leaf.jpg', 'rb').read(), model, CLASSES)
+# print(result)`
         },
 
         {
